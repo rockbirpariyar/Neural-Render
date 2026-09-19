@@ -54,11 +54,8 @@ namespace
             if (FAILED(result) && result != D3DERR_NOTFOUND) return result;
             result = device_->GetRenderState(D3DRS_SRGBWRITEENABLE, &srgb_write_);
             if (FAILED(result)) return result;
-            for (DWORD index = 0; index < std::size(srgb_textures_); ++index)
-            {
-                result = device_->GetSamplerState(index, D3DSAMP_SRGBTEXTURE, &srgb_textures_[index]);
-                if (FAILED(result)) return result;
-            }
+            result = device_->GetSamplerState(0, D3DSAMP_SRGBTEXTURE, &srgb_texture_);
+            if (FAILED(result)) return result;
             result = device_->GetStreamSource(0, &stream_, &stream_offset_, &stream_stride_);
             if (FAILED(result)) return result;
 
@@ -101,8 +98,7 @@ namespace
 
             // Explicit restores also protect against overlay state-block quirks.
             remember_failure(device_->SetRenderState(D3DRS_SRGBWRITEENABLE, srgb_write_));
-            for (DWORD index = 0; index < std::size(srgb_textures_); ++index)
-                remember_failure(device_->SetSamplerState(index, D3DSAMP_SRGBTEXTURE, srgb_textures_[index]));
+            remember_failure(device_->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, srgb_texture_));
             remember_failure(device_->SetStreamSource(0, stream_, stream_offset_, stream_stride_));
             for (UINT index = 0; index < stream_count_; ++index)
                 remember_failure(device_->SetStreamSourceFreq(index, stream_frequencies_[index]));
@@ -129,7 +125,7 @@ namespace
         UINT stream_count_ = 0;
         DWORD target_count_ = 0;
         DWORD srgb_write_ = 0;
-        DWORD srgb_textures_[5] = {};
+        DWORD srgb_texture_ = 0;
         BOOL software_vertex_processing_ = FALSE;
         bool mixed_vertex_processing_ = false;
         bool captured_ = false;
@@ -145,10 +141,6 @@ namespace enr
 
     void grayscale_d3d9::reset()
     {
-        motion_.reset();
-        release(motion_display_shader_);
-        motion_display_attempted_ = false;
-        motion_display_result_ = S_OK;
         release_history();
         release(copy_shader_);
         history_attempted_ = false;
@@ -346,7 +338,6 @@ namespace enr
 
     void grayscale_d3d9::invalidate_history()
     {
-        motion_.invalidate();
         history_valid_ = false;
         history_source_ = nullptr;
         history_generation_ = history_frame_ = 0;
@@ -543,44 +534,11 @@ namespace enr
             return result;
         }
 
-        // Motion must compare the untouched current scene against frame N-1.
-        // Both debug display and the history replacement happen after these
-        // commands; this also prevents a displayed motion/history image from
-        // entering the next frame's motion inputs.
-        motion_report motion_status;
-        report.motion_result = motion_.process(device, scratch_, history_color_,
-            depth, history_depth_, width_, height_, depth_description.Width,
-            depth_description.Height, history_valid_, reversed,
-            &grayscale_d3d9::draw_motion_pass, this, motion_status);
-        report.motion_resources_initialized = motion_status.initialized;
-        report.motion_processed = motion_status.processed;
-        report.motion_width = motion_status.width;
-        report.motion_height = motion_status.height;
-
         IDirect3DTexture9 *display_input = scratch_;
         IDirect3DPixelShader9 *display_shader = shader_;
         const float depth_options[] = { linearize ? 1.0f : 0.0f, reversed ? 1.0f : 0.0f, 0.0f, 0.0f };
-        const float motion_options[] = { motion_.valid() ? 1.0f : 0.0f, 1.0f / 8.0f, 0.0f, 0.0f };
         const float *display_constants = nullptr;
-        if (view == temporal_view::motion)
-        {
-            if (!motion_display_attempted_)
-            {
-                motion_display_attempted_ = true;
-                motion_display_result_ = initialize_motion_display_shader();
-            }
-            if (SUCCEEDED(motion_display_result_))
-            {
-                // A first frame, discontinuity, or failed estimate is dark,
-                // never a stale motion field from before the invalidation.
-                display_input = motion_.valid() ? motion_.texture() : scratch_;
-                display_shader = motion_display_shader_;
-                display_constants = motion_options;
-            }
-            else if (SUCCEEDED(report.motion_result))
-                report.motion_result = motion_display_result_;
-        }
-        else if (view == temporal_view::previous_color && history_valid_)
+        if (view == temporal_view::previous_color && history_valid_)
         {
             display_input = history_color_;
             display_shader = copy_shader_;
@@ -641,30 +599,6 @@ namespace enr
         UINT width, UINT height, const float *constants, DWORD color_mask,
         IDirect3DQuery9 **queries)
     {
-        return draw_pass_inputs(target, shader, vertices, width, height, &input, 1,
-            constants, constants != nullptr ? 1 : 0, color_mask, queries);
-    }
-
-    HRESULT grayscale_d3d9::draw_motion_pass(void *context, IDirect3DSurface9 *target,
-        IDirect3DPixelShader9 *shader, IDirect3DVertexBuffer9 *vertices,
-        UINT width, UINT height, IDirect3DTexture9 *const *inputs, UINT input_count,
-        const float *constants, UINT constant_count)
-    {
-        return static_cast<grayscale_d3d9 *>(context)->draw_pass_inputs(target, shader,
-            vertices, width, height, inputs, input_count, constants, constant_count,
-            D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
-            D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
-    }
-
-    HRESULT grayscale_d3d9::draw_pass_inputs(IDirect3DSurface9 *target,
-        IDirect3DPixelShader9 *shader, IDirect3DVertexBuffer9 *vertices,
-        UINT width, UINT height, IDirect3DTexture9 *const *inputs, UINT input_count,
-        const float *constants, UINT constant_count, DWORD color_mask,
-        IDirect3DQuery9 **queries)
-    {
-        if (inputs == nullptr || input_count == 0 || input_count > 5 ||
-            (constants != nullptr && (constant_count == 0 || constant_count > 224)))
-            return E_INVALIDARG;
         IDirect3DDevice9 *device = device_;
         saved_state previous(device, state_block_, mixed_vertex_processing_);
         HRESULT result = previous.capture(caps_);
@@ -705,19 +639,17 @@ namespace enr
                 { D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP }, { D3DSAMP_SRGBTEXTURE, FALSE },
                 { D3DSAMP_MIPMAPLODBIAS, 0 }, { D3DSAMP_MAXMIPLEVEL, 0 }
             };
-            for (UINT index = 0; index < input_count; ++index)
-                for (const auto &state : sampler_states)
-                    ENR_CHECK_STATE(device->SetSamplerState(index, state.state, state.value));
+            for (const auto &state : sampler_states)
+                ENR_CHECK_STATE(device->SetSamplerState(0, state.state, state.value));
             ENR_CHECK_STATE(device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE));
             ENR_CHECK_STATE(device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0));
             ENR_CHECK_STATE(device->SetVertexShader(nullptr));
             ENR_CHECK_STATE(device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1));
             ENR_CHECK_STATE(device->SetStreamSource(0, vertices, 0, sizeof(vertex)));
             ENR_CHECK_STATE(device->SetPixelShader(shader));
-            for (UINT index = 0; index < input_count; ++index)
-                ENR_CHECK_STATE(device->SetTexture(index, inputs[index]));
+            ENR_CHECK_STATE(device->SetTexture(0, input));
             if (constants != nullptr)
-                ENR_CHECK_STATE(device->SetPixelShaderConstantF(0, constants, constant_count));
+                ENR_CHECK_STATE(device->SetPixelShaderConstantF(0, constants, 1));
 
             if (queries != nullptr)
             {
@@ -772,38 +704,6 @@ namespace enr
         release(diagnostics);
         if (SUCCEEDED(result))
             result = device_->CreatePixelShader(static_cast<const DWORD *>(bytecode->GetBufferPointer()), &depth_shader_);
-        release(bytecode);
-        return result;
-    }
-
-    HRESULT grayscale_d3d9::initialize_motion_display_shader()
-    {
-        constexpr char source[] =
-            "sampler2D motion_field : register(s0);\n"
-            "float4 options : register(c0);\n"
-            "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
-            "    if (options.x < 0.5) return float4(0.0, 0.0, 0.0, 1.0);\n"
-            "    float4 field = tex2D(motion_field, uv);\n"
-            "    float2 v = field.rg * options.y;\n"
-            // Positive/negative horizontal correspondence uses red/cyan;
-            // positive/negative vertical correspondence uses green/magenta.
-            // Zero vectors and rejected history remain black. RGB-only output
-            // preserves the backbuffer's original alpha just like grayscale.
-            "    float3 color = float3(max(v.x, 0.0) + max(-v.y, 0.0),\n"
-            "        max(-v.x, 0.0) + max(v.y, 0.0),\n"
-            "        max(-v.x, 0.0) + max(-v.y, 0.0));\n"
-            "    return float4(saturate(color) * saturate(field.b) * saturate(field.a), 1.0);\n"
-            "}\n";
-        ID3DBlob *bytecode = nullptr;
-        ID3DBlob *diagnostics = nullptr;
-        const char *profile = caps_.PixelShaderVersion >= D3DPS_VERSION(3, 0) ? "ps_3_0" : "ps_2_0";
-        HRESULT result = D3DCompile(source, sizeof(source) - 1, "ENR motion visualization",
-            nullptr, nullptr, "main", profile, D3DCOMPILE_OPTIMIZATION_LEVEL3,
-            0, &bytecode, &diagnostics);
-        release(diagnostics);
-        if (SUCCEEDED(result))
-            result = device_->CreatePixelShader(static_cast<const DWORD *>(bytecode->GetBufferPointer()),
-                &motion_display_shader_);
         release(bytecode);
         return result;
     }

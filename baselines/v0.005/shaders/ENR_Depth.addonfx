@@ -1,0 +1,27 @@
+// ENR v0.004: public DEPTH binding only; image rendering stays in enr.addon32.
+texture ENRDepthSource : DEPTH;
+sampler ENRDepthSampler { Texture = ENRDepthSource; };
+
+void ENRDepthVertex(uint id : SV_VertexID, out float4 position : SV_Position,
+    out float2 uv : TEXCOORD0)
+{
+    uv = float2(id == 1 ? 2.0 : 0.0, id == 2 ? 2.0 : 0.0);
+    position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+
+float4 ENRDepthBindingPixel(float4 position : SV_Position, float2 uv : TEXCOORD0) : SV_Target
+{
+    return tex2D(ENRDepthSampler, uv).rrrr;
+}
+
+technique ENRDepthBinding < bool hidden = true; bool enabled = false; >
+{
+    pass
+    {
+        VertexShader = ENRDepthVertex;
+        PixelShader = ENRDepthBindingPixel;
+        ColorWriteMask = 0;
+        StencilEnable = false;
+        BlendEnable = false;
+    }
+}

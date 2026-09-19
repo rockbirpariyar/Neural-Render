@@ -73,7 +73,7 @@ int wmain(int argc, wchar_t **argv) {
     const auto uninit = std::bit_cast<void (*)(HMODULE, HMODULE)>(GetProcAddress(module, "AddonUninit"));
     const auto name = reinterpret_cast<const char **>(GetProcAddress(module, "NAME"));
     require(init && uninit && name && *name, "missing entry point or NAME export");
-    require(std::string(*name) == "ENR v0.006", "unexpected add-on name");
+    require(std::string(*name) == "ENR v0.005", "unexpected add-on name");
     const HMODULE host = GetModuleHandleW(nullptr);
     const bool initialized = init(module, host);
     require(registration_calls == 1, "initialization must register once");
@@ -84,7 +84,7 @@ int wmain(int argc, wchar_t **argv) {
         return 0;
     }
     require(initialized && registered_module == module && present_callback && registered_events.size() == 8, "initialization failed");
-    std::string expected = "ENR v0.006 initialized\r\n";
+    std::string expected = "ENR v0.005 initialized\r\n";
     require(read_log(log_path) == expected, "initialization log mismatch");
     const auto present = reinterpret_cast<reshade::addon_event_traits<reshade::addon_event::present>::decl>(present_callback);
     const auto reshade_present = reinterpret_cast<reshade::addon_event_traits<reshade::addon_event::reshade_present>::decl>(
@@ -95,8 +95,7 @@ int wmain(int argc, wchar_t **argv) {
         return "present callbacks=" + std::to_string(frame) + "\r\n"
             + "reshade_present callbacks=" + std::to_string(frame / 2) + "\r\n"
             + "grayscale draws=0\r\nfailures=0\r\n"
-            + "history valid=0\r\nhistory updates=0\r\nhistory failures=0\r\n"
-            + "Motion frames processed: 0\r\nMotion failures: 0\r\n";
+            + "history valid=0\r\nhistory updates=0\r\nhistory failures=0\r\n";
     };
     for (unsigned frame = 1; frame <= 900; ++frame) {
         present(nullptr, nullptr, nullptr, nullptr, 0, nullptr);
@@ -128,6 +127,6 @@ int wmain(int argc, wchar_t **argv) {
     require(FreeLibrary(module) != 0, "FreeLibrary failed");
     require(read_log(log_path) == expected, "DLL detach must not write runtime diagnostics");
     std::cout << "PASS: exact 300-frame logging, 900 presents / 450 runtime callbacks / 0 draws / 0 failures, "
-        "missing/duplicate finish_present boundaries, v0.006 startup, quiet unload\n";
+        "missing/duplicate finish_present boundaries, v0.005 startup, quiet unload\n";
     return 0;
 }

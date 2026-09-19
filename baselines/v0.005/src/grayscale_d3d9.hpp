@@ -3,11 +3,10 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdint>
-#include "motion_d3d9.hpp"
 
 namespace enr
 {
-    enum class temporal_view { current_grayscale, current_depth, previous_color, previous_depth, motion };
+    enum class temporal_view { current_grayscale, current_depth, previous_color, previous_depth };
 
     struct temporal_report
     {
@@ -20,10 +19,6 @@ namespace enr
         bool displayed_history = false;
         const char *reset_reason = nullptr;
         HRESULT history_result = S_OK;
-        bool motion_resources_initialized = false;
-        bool motion_processed = false;
-        HRESULT motion_result = S_OK;
-        UINT motion_width = 0, motion_height = 0;
         UINT color_width = 0, color_height = 0;
         UINT depth_width = 0, depth_height = 0;
     };
@@ -57,8 +52,6 @@ namespace enr
             temporal_view view, bool linearize, bool reversed, temporal_report &report);
         bool history_valid() const { return history_valid_; }
         bool history_initialized() const { return history_color_ != nullptr && history_depth_ != nullptr; }
-        IDirect3DTexture9 *motion_texture() const { return motion_.texture(); }
-        bool motion_valid() const { return motion_.valid(); }
         // Borrowed GPU resources. After render_temporal these hold the current
         // frame, ready to be consumed as previous-frame inputs on the next call.
         IDirect3DTexture9 *previous_color() const { return history_color_; }
@@ -81,21 +74,11 @@ namespace enr
         HRESULT render_impl(IDirect3DDevice9 *device, IDirect3DSurface9 *backbuffer,
             IDirect3DTexture9 *depth, bool linearize, bool reversed, bool &initialized_now);
         HRESULT initialize_depth_shader();
-        HRESULT initialize_motion_display_shader();
         HRESULT initialize_probe();
         HRESULT draw_pass(IDirect3DSurface9 *target, IDirect3DTexture9 *input,
             IDirect3DPixelShader9 *shader, IDirect3DVertexBuffer9 *vertices,
             UINT width, UINT height, const float *constants, DWORD color_mask,
             IDirect3DQuery9 **queries = nullptr);
-        HRESULT draw_pass_inputs(IDirect3DSurface9 *target, IDirect3DPixelShader9 *shader,
-            IDirect3DVertexBuffer9 *vertices, UINT width, UINT height,
-            IDirect3DTexture9 *const *inputs, UINT input_count,
-            const float *constants, UINT constant_count, DWORD color_mask,
-            IDirect3DQuery9 **queries = nullptr);
-        static HRESULT draw_motion_pass(void *context, IDirect3DSurface9 *target,
-            IDirect3DPixelShader9 *shader, IDirect3DVertexBuffer9 *vertices,
-            UINT width, UINT height, IDirect3DTexture9 *const *inputs, UINT input_count,
-            const float *constants, UINT constant_count);
 
         struct vertex { float x, y, z, rhw, u, v; };
 
@@ -116,10 +99,6 @@ namespace enr
         D3DFORMAT format_ = D3DFMT_UNKNOWN;
         bool depth_shader_attempted_ = false;
         HRESULT depth_shader_result_ = S_OK;
-        motion_d3d9 motion_;
-        IDirect3DPixelShader9 *motion_display_shader_ = nullptr;
-        bool motion_display_attempted_ = false;
-        HRESULT motion_display_result_ = S_OK;
 
         IDirect3DTexture9 *history_color_ = nullptr;
         IDirect3DSurface9 *history_color_surface_ = nullptr;
