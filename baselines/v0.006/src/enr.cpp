@@ -9,10 +9,8 @@
 #include <cstring>
 #include <cwchar>
 #include <new>
-#include <algorithm>
-#include <vector>
 
-static_assert(sizeof(void *) == 4, "ENR v0.006.1 is a 32-bit add-on.");
+static_assert(sizeof(void *) == 4, "ENR v0.006 is a 32-bit add-on.");
 
 namespace
 {
@@ -43,27 +41,6 @@ namespace
     bool have_depth_sample = false;
     std::uint64_t sampled_generation = 0;
     unsigned previous_valid = 0, previous_signature1 = 0, previous_signature2 = 0;
-
-    // Only initialization events may introduce identities. Ordinary callbacks
-    // look them up before dereferencing an API object. Reset can reuse addresses.
-    struct runtime_entry
-    {
-        reshade::api::effect_runtime *runtime = nullptr;
-        reshade::api::device *device = nullptr;
-        std::uint64_t native_swapchain = 0, epoch = 0;
-    };
-    struct swapchain_entry
-    {
-        reshade::api::swapchain *swapchain = nullptr;
-        reshade::api::device *device = nullptr;
-        std::uint64_t native_swapchain = 0;
-    };
-    std::vector<runtime_entry> live_runtimes;
-    std::vector<swapchain_entry> live_swapchains;
-    runtime_entry active_runtime = {};
-    reshade::api::swapchain *active_swapchain = nullptr;
-    std::uint64_t lifetime_sequence = 0, presentation_epoch = 0, effects_epoch = 0;
-    bool presentation_open = false, final_frame_seen = false;
 
     void invalidate_history(const char *reason);
 
@@ -193,27 +170,11 @@ namespace
         }
     }
 
-    void handle_depth_probe(const enr::depth_probe_result &result, std::uint64_t expected_generation)
+    void handle_depth_probe(const enr::depth_probe_result &result)
     {
         using state = enr::depth_probe_result::state;
-        // Defense at the logging boundary as well as at the query reader: an
-        // invalid result never becomes scene data or a change-comparison sample.
-        if (result.status == state::invalid || (result.status == state::ready &&
-            (result.valid > enr::depth_probe_sample_count || result.generation != expected_generation ||
-                result.signature1 > result.valid || result.signature2 > result.valid)))
-        {
-            have_depth_sample = false;
-            sampled_generation = 0;
-            previous_valid = previous_signature1 = previous_signature2 = 0;
-            write_formatted("ERROR: invalid depth diagnostic discarded (HRESULT 0x%08X)",
-                static_cast<unsigned>(FAILED(result.error) ? result.error : E_UNEXPECTED));
-            return;
-        }
         if (result.status == state::unavailable)
         {
-            have_depth_sample = false;
-            sampled_generation = 0;
-            previous_valid = previous_signature1 = previous_signature2 = 0;
             if (!probe_failure_logged)
             {
                 write_formatted("Depth change validation unavailable: HRESULT 0x%08X",
@@ -223,7 +184,7 @@ namespace
             return;
         }
         if (result.status != state::ready) return;
-        write_formatted("Depth samples: valid=%u/%u", result.valid, enr::depth_probe_sample_count);
+        write_formatted("Depth samples: valid=%u/256", result.valid);
         if (result.valid == 0 && !empty_depth_logged)
         {
             write_line("No non-clear scene depth in sampled positions");
@@ -382,8 +343,7 @@ namespace
         enr::depth_source source = {};
         const ULONGLONG now = GetTickCount64();
         if (depth_binding != nullptr)
-            depth_binding->acquire(runtime, effects_runtime == runtime && effects_frame == present_count &&
-                effects_epoch == active_runtime.epoch && presentation_open, source);
+            depth_binding->acquire(runtime, effects_runtime == runtime && effects_frame == present_count, source);
         log_depth_source(source, now);
 
         IDirect3DSurface9 *backbuffer = nullptr;
@@ -403,144 +363,18 @@ namespace
         if (backbuffer != nullptr) backbuffer->Release();
 
         if (SUCCEEDED(result) && source.texture != nullptr)
-            handle_depth_probe(grayscale->poll_depth_probe(native_device, source.texture, source.generation, now),
-                source.generation);
+            handle_depth_probe(grayscale->poll_depth_probe(native_device, source.texture, source.generation, now));
         return result;
     }
 
-    void reset_depth_tracking()
-    {
-        // Cancel queries and comparison state before releasing their source.
-        if (grayscale != nullptr) grayscale->cancel_depth_probe();
-        if (depth_binding != nullptr) depth_binding->reset();
-        effects_runtime = nullptr;
-        effects_frame = UINT64_MAX;
-        effects_epoch = 0;
-        have_depth_sample = false;
-        sampled_generation = 0;
-        previous_valid = previous_signature1 = previous_signature2 = 0;
-        depth_detected_logged = no_depth_logged = probe_failure_logged = false;
-        depth_changed_logged = depth_unchanged_logged = empty_depth_logged = false;
-        logged_depth_width = logged_depth_height = 0;
-        logged_depth_format = D3DFMT_UNKNOWN;
-        depth_unavailable_since = GetTickCount64();
-    }
-
-    void reset_epoch_counters()
-    {
-        present_count = reshade_present_count = grayscale_draw_count = failure_count = 0;
-        last_logged_present = 0;
-        history_update_count = history_failure_count = history_last_updated_frame = 0;
-        motion_frame_count = motion_failure_count = 0;
-        history_error_logged = motion_active_logged = motion_error_logged = false;
-        history_runtime = nullptr;
-        history_swapchain = nullptr;
-    }
-
-    // Caller holds state_lock. Make the lifetime inaccessible BEFORE releasing
-    // any COM object; callbacks waiting on the lock will observe the closed gate.
-    void deactivate_runtime(const char *reason)
-    {
-        const bool had_runtime = active_runtime.runtime != nullptr;
-        active_runtime = {};
-        active_swapchain = nullptr;
-        presentation_open = final_frame_seen = false;
-        presentation_epoch = 0;
-        if (reason != nullptr && had_runtime)
-        {
-            write_formatted("Runtime state reset: %s", reason);
-            invalidate_history(reason);
-        }
-        else if (grayscale != nullptr) grayscale->invalidate_history();
-        reset_depth_tracking();
-        if (grayscale != nullptr) grayscale->reset();
-        reset_epoch_counters();
-    }
-
-    bool current_presentation(reshade::api::effect_runtime *runtime)
-    {
-        return initialized && runtime != nullptr && presentation_open &&
-            runtime == active_runtime.runtime && presentation_epoch == active_runtime.epoch &&
-            std::any_of(live_runtimes.begin(), live_runtimes.end(), [runtime](const auto &entry)
-                { return entry.runtime == runtime && entry.epoch == active_runtime.epoch; });
-    }
-
-    void on_init_swapchain(reshade::api::swapchain *swapchain, bool)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && swapchain != nullptr)
-        {
-            if (active_swapchain == swapchain) deactivate_runtime("swapchain initialized again");
-            const auto old = std::find_if(live_swapchains.begin(), live_swapchains.end(),
-                [swapchain](const auto &entry) { return entry.swapchain == swapchain; });
-            if (old != live_swapchains.end())
-                std::erase_if(live_runtimes, [&old](const auto &entry) { return entry.device == old->device &&
-                    entry.native_swapchain == old->native_swapchain; });
-            std::erase_if(live_swapchains, [swapchain](const auto &entry) { return entry.swapchain == swapchain; });
-            // Scalar metadata only, read exclusively inside an official init event.
-            auto *const device = swapchain->get_device();
-            const auto native = swapchain->get_native();
-            try { if (device != nullptr && native != 0) live_swapchains.push_back({ swapchain, device, native }); }
-            catch (const std::bad_alloc &) { write_line("ERROR: swapchain lifetime registration failed"); }
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_init_effect_runtime(reshade::api::effect_runtime *runtime)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && runtime != nullptr)
-        {
-            if (active_runtime.runtime == runtime) deactivate_runtime("effect runtime initialized again");
-            std::erase_if(live_runtimes, [runtime](const auto &entry) { return entry.runtime == runtime; });
-            auto *const device = runtime->get_device();
-            if (device != nullptr && device->get_api() == reshade::api::device_api::d3d9)
-            {
-                const auto native = runtime->get_native();
-                if (active_runtime.device == device && active_runtime.native_swapchain == native)
-                    deactivate_runtime("effect runtime replaced on the same swapchain");
-                std::erase_if(live_runtimes, [device, native](const auto &entry) {
-                    return entry.device == device && entry.native_swapchain == native; });
-                try { if (native != 0) live_runtimes.push_back({ runtime, device, native, ++lifetime_sequence }); }
-                catch (const std::bad_alloc &) { write_line("ERROR: runtime lifetime registration failed"); }
-            }
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_present(reshade::api::command_queue *, reshade::api::swapchain *swapchain,
+    void on_present(reshade::api::command_queue *, reshade::api::swapchain *,
         const reshade::api::rect *, const reshade::api::rect *, std::uint32_t, const reshade::api::rect *)
     {
         AcquireSRWLockExclusive(&state_lock);
-        if (initialized && swapchain != nullptr)
+        if (initialized)
         {
-            const auto chain = std::find_if(live_swapchains.begin(), live_swapchains.end(),
-                [swapchain](const auto &entry) { return entry.swapchain == swapchain; });
-            if (chain != live_swapchains.end())
-            {
-                const auto runtime = std::find_if(live_runtimes.begin(), live_runtimes.end(),
-                    [&chain](const auto &entry) { return entry.device == chain->device &&
-                        entry.native_swapchain == chain->native_swapchain; });
-                if (runtime != live_runtimes.end() &&
-                    (active_runtime.runtime == nullptr || active_runtime.runtime == runtime->runtime))
-                {
-                    if (active_runtime.runtime == nullptr)
-                    {
-                        reset_epoch_counters();
-                        active_runtime = *runtime;
-                        active_swapchain = swapchain;
-                        write_formatted("Runtime active: epoch=%llu", static_cast<unsigned long long>(runtime->epoch));
-                    }
-                    if (presentation_open) log_completed_frames();
-                    ++present_count;
-                    presentation_open = true;
-                    final_frame_seen = false;
-                    presentation_epoch = active_runtime.epoch;
-                    effects_runtime = nullptr;
-                    effects_frame = UINT64_MAX;
-                    effects_epoch = 0;
-                }
-            }
+            log_completed_frames();
+            ++present_count;
         }
         ReleaseSRWLockExclusive(&state_lock);
     }
@@ -549,11 +383,10 @@ namespace
         reshade::api::resource_view, reshade::api::resource_view)
     {
         AcquireSRWLockExclusive(&state_lock);
-        if (current_presentation(runtime) && !final_frame_seen)
+        if (initialized)
         {
             effects_runtime = runtime;
             effects_frame = present_count;
-            effects_epoch = active_runtime.epoch;
         }
         ReleaseSRWLockExclusive(&state_lock);
     }
@@ -561,90 +394,66 @@ namespace
     void on_reshade_present(reshade::api::effect_runtime *runtime)
     {
         AcquireSRWLockExclusive(&state_lock);
-        if (current_presentation(runtime) && !final_frame_seen)
+        if (initialized)
         {
-            final_frame_seen = true;
             ++reshade_present_count;
-            // The established final rendering point remains unchanged.
-            if (SUCCEEDED(draw_frame(runtime))) ++grayscale_draw_count;
-            else ++failure_count;
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_finish_present(reshade::api::command_queue *, reshade::api::swapchain *swapchain)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && presentation_open && swapchain == active_swapchain &&
-            presentation_epoch == active_runtime.epoch)
-        {
-            // This is bookkeeping only: D3D9 also emits finish_present on loss.
-            log_completed_frames();
-            presentation_open = false;
-            effects_runtime = nullptr;
-            effects_frame = UINT64_MAX;
-            effects_epoch = 0;
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_reloaded_effects(reshade::api::effect_runtime *runtime)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && runtime != nullptr && runtime == active_runtime.runtime)
-        {
-            invalidate_history("ReShade effects reloaded");
-            reset_depth_tracking();
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_destroy_effect_runtime(reshade::api::effect_runtime *runtime)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && runtime != nullptr)
-        {
-            if (active_runtime.runtime == runtime) deactivate_runtime("effect runtime destroyed or reset");
-            std::erase_if(live_runtimes, [runtime](const auto &entry) { return entry.runtime == runtime; });
-        }
-        ReleaseSRWLockExclusive(&state_lock);
-    }
-
-    void on_destroy_swapchain(reshade::api::swapchain *swapchain, bool resize)
-    {
-        AcquireSRWLockExclusive(&state_lock);
-        if (initialized && swapchain != nullptr)
-        {
-            const auto chain = std::find_if(live_swapchains.begin(), live_swapchains.end(),
-                [swapchain](const auto &entry) { return entry.swapchain == swapchain; });
-            if (chain != live_swapchains.end())
+            if (runtime != nullptr)
             {
-                if (active_swapchain == swapchain) deactivate_runtime(resize ? "swapchain resized or reset" : "swapchain destroyed");
-                std::erase_if(live_runtimes, [&chain](const auto &entry) { return entry.device == chain->device &&
-                    entry.native_swapchain == chain->native_swapchain; });
-                live_swapchains.erase(chain);
+                // The established final rendering point remains unchanged.
+                if (SUCCEEDED(draw_frame(runtime))) ++grayscale_draw_count;
+                else ++failure_count;
             }
+            else invalidate_history("effect runtime unavailable");
         }
         ReleaseSRWLockExclusive(&state_lock);
     }
 
-    void on_destroy_device(reshade::api::device *device)
+    void on_finish_present(reshade::api::command_queue *, reshade::api::swapchain *)
     {
         AcquireSRWLockExclusive(&state_lock);
-        if (initialized && device != nullptr)
-        {
-            if (active_runtime.device == device) deactivate_runtime("device destroyed or reset");
-            std::erase_if(live_runtimes, [device](const auto &entry) { return entry.device == device; });
-            std::erase_if(live_swapchains, [device](const auto &entry) { return entry.device == device; });
-        }
+        if (initialized) log_completed_frames();
         ReleaseSRWLockExclusive(&state_lock);
     }
+
+    void reset_depth_tracking()
+    {
+        if (depth_binding != nullptr) depth_binding->reset();
+        effects_runtime = nullptr;
+        effects_frame = UINT64_MAX;
+        have_depth_sample = false;
+        depth_unavailable_since = GetTickCount64();
+    }
+
+    void on_reloaded_effects(reshade::api::effect_runtime *)
+    {
+        AcquireSRWLockExclusive(&state_lock);
+        reset_depth_tracking(); // All public effect variable handles were invalidated.
+        invalidate_history("ReShade effects reloaded");
+        ReleaseSRWLockExclusive(&state_lock);
+    }
+
+    void release_resources(const char *reason)
+    {
+        AcquireSRWLockExclusive(&state_lock);
+        if (grayscale != nullptr && grayscale->history_initialized() && !grayscale->history_valid())
+            write_formatted("History reset: %s", reason);
+        invalidate_history(reason);
+        reset_depth_tracking();
+        if (grayscale != nullptr) grayscale->reset();
+        history_runtime = nullptr;
+        history_swapchain = nullptr;
+        ReleaseSRWLockExclusive(&state_lock);
+    }
+
+    void on_destroy_effect_runtime(reshade::api::effect_runtime *) { release_resources("effect runtime destroyed or reset"); }
+    void on_destroy_swapchain(reshade::api::swapchain *, bool resize) { release_resources(resize ? "swapchain resized or reset" : "swapchain destroyed"); }
+    void on_destroy_device(reshade::api::device *) { release_resources("device destroyed or reset"); }
 }
 
 extern "C"
 {
-    __declspec(dllexport) const char *NAME = "ENR v0.006.1";
-    __declspec(dllexport) const char *DESCRIPTION = "GPU motion/history prototype with guarded runtime lifetimes and validated depth diagnostics.";
+    __declspec(dllexport) const char *NAME = "ENR v0.006";
+    __declspec(dllexport) const char *DESCRIPTION = "GPU motion estimation prototype with depth rejection and persistent temporal history.";
 
     __declspec(dllexport) bool AddonInit(HMODULE addon_module, HMODULE reshade_module)
     {
@@ -663,12 +472,26 @@ extern "C"
             reshade::unregister_addon(addon_module, reshade_module);
             return false;
         }
-        live_runtimes.clear();
-        live_swapchains.clear();
-        lifetime_sequence = 0;
-        deactivate_runtime(nullptr);
+        present_count = reshade_present_count = grayscale_draw_count = failure_count = 0;
+        last_logged_present = 0;
+        history_update_count = history_failure_count = 0;
+        history_last_updated_frame = 0;
+        motion_frame_count = motion_failure_count = 0;
+        motion_active_logged = motion_error_logged = false;
+        history_error_logged = false;
+        history_runtime = nullptr;
+        history_swapchain = nullptr;
+        depth_unavailable_since = GetTickCount64();
+        depth_detected_logged = no_depth_logged = probe_failure_logged = false;
+        depth_changed_logged = depth_unchanged_logged = empty_depth_logged = false;
+        logged_depth_width = logged_depth_height = 0;
+        logged_depth_format = D3DFMT_UNKNOWN;
+        effects_runtime = nullptr;
+        effects_frame = UINT64_MAX;
+        have_depth_sample = false;
+        sampled_generation = 0;
         initialized = true;
-        write_line("ENR v0.006.1 initialized");
+        write_line("ENR v0.006 initialized");
         if (depth_debug)
             write_line(depth_linearize ? "Depth visualization enabled (linearized)" : "Depth visualization enabled (raw)");
         if (history_debug != 0)
@@ -682,8 +505,6 @@ extern "C"
         reshade::register_event<reshade::addon_event::present>(on_present);
         reshade::register_event<reshade::addon_event::reshade_present>(on_reshade_present);
         reshade::register_event<reshade::addon_event::finish_present>(on_finish_present);
-        reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
-        reshade::register_event<reshade::addon_event::init_effect_runtime>(on_init_effect_runtime);
         reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
         reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(on_finish_effects);
@@ -694,36 +515,23 @@ extern "C"
 
     __declspec(dllexport) void AddonUninit(HMODULE addon_module, HMODULE reshade_module)
     {
-        // Close the callback gate under the same lock as rendering, before
-        // unregistering events or destroying resources. Already queued calls
-        // then return without reading runtime objects or renderer pointers.
-        AcquireSRWLockExclusive(&state_lock);
-        const bool was_initialized = initialized;
-        initialized = false;
-        presentation_open = false;
-        ReleaseSRWLockExclusive(&state_lock);
-        if (!was_initialized) return;
         reshade::unregister_event<reshade::addon_event::present>(on_present);
         reshade::unregister_event<reshade::addon_event::reshade_present>(on_reshade_present);
         reshade::unregister_event<reshade::addon_event::finish_present>(on_finish_present);
-        reshade::unregister_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
-        reshade::unregister_event<reshade::addon_event::init_effect_runtime>(on_init_effect_runtime);
         reshade::unregister_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
         reshade::unregister_event<reshade::addon_event::destroy_device>(on_destroy_device);
         reshade::unregister_event<reshade::addon_event::reshade_finish_effects>(on_finish_effects);
         reshade::unregister_event<reshade::addon_event::reshade_reloaded_effects>(on_reloaded_effects);
         reshade::unregister_event<reshade::addon_event::destroy_effect_runtime>(on_destroy_effect_runtime);
         AcquireSRWLockExclusive(&state_lock);
-        deactivate_runtime(nullptr);
-        live_runtimes.clear();
-        live_swapchains.clear();
+        const bool was_initialized = initialized;
         delete grayscale;
         delete depth_binding;
         grayscale = nullptr;
         depth_binding = nullptr;
         close_log();
         ReleaseSRWLockExclusive(&state_lock);
-        reshade::unregister_addon(addon_module, reshade_module);
+        if (was_initialized) reshade::unregister_addon(addon_module, reshade_module);
     }
 }
 

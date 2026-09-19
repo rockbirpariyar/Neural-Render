@@ -193,8 +193,6 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0 {
 #ifndef ENR_TEMPORAL_FIXTURE_HELPERS_ONLY
 int wmain()
 {
-    std::setvbuf(stdout,nullptr,_IOFBF,16384);
-    std::setvbuf(stderr,nullptr,_IOFBF,16384);
     test_objects objects;
     wchar_t system_path[MAX_PATH] {};
     GetSystemDirectoryW(system_path, MAX_PATH);
@@ -318,37 +316,6 @@ int wmain()
     if (!require_temporal(!renderer.history_valid(), "reset retained history validity")) return 1;
     if (!render_frame(1, .8f, enr::temporal_view::previous_color, true, false, false) ||
         !render_frame(2, .2f, enr::temporal_view::previous_color, true, true, true) || !predicate.resolve()) return 1;
-    // Issue real asynchronous probe queries, then cross each cancellation
-    // boundary before collecting them. Only scalar status is inspected.
-    const auto probe = [&](ULONGLONG now, std::uint64_t probe_generation, IDirect3DTexture9 *source,
-        enr::depth_probe_result::state expected)
-    {
-        if (!succeeded(objects.device->BeginScene(), "BeginScene(probe lifecycle)")) return false;
-        const auto result = renderer.poll_depth_probe(objects.device, source, probe_generation, now);
-        if (!succeeded(objects.device->EndScene(), "EndScene(probe lifecycle)")) return false;
-        return require_temporal(result.status == expected && result.valid == 0 && result.signature1 == 0 &&
-            result.signature2 == 0 && result.generation == 0, "cancelled probe published stale or partial counts");
-    };
-    const auto pending = enr::depth_probe_result::state::none;
-    if (!probe(10000,generation,images.depth,pending)) return 1;
-    renderer.cancel_depth_probe();
-    if (!probe(10100,generation,images.depth,pending) ||
-        !require_temporal(renderer.history_valid(),"diagnostic-only cancellation invalidated valid history") ||
-        !probe(15000,generation,images.depth,pending)) return 1;
-    renderer.invalidate_history();
-    if (!probe(15100,generation,images.depth,pending) ||
-        !require_temporal(!renderer.history_valid() && !renderer.motion_valid(),"effect-reload invalidation retained temporal/motion validity") ||
-        !probe(20000,generation,images.depth,pending) ||
-        !probe(20100,generation+1,images.depth,pending) ||
-        !probe(25000,generation+1,images.depth,pending) ||
-        !probe(25100,generation+1,application_texture,pending) ||
-        !probe(30000,generation+1,images.depth,pending)) return 1;
-    renderer.reset();
-    if (!probe(30100,generation+1,images.depth,enr::depth_probe_result::state::unavailable) ||
-        !require_temporal(!renderer.history_valid() && !renderer.motion_valid(),"reset retained valid history/motion") ||
-        !succeeded(objects.device->Present(nullptr,nullptr,nullptr,nullptr),"Present(cancelled probes)")) return 1;
-    std::printf("PASS: pending GPU probes cancelled across explicit cancellation, history invalidation, generation/source replacement, "
-        "and reset; no stale result or immediate reissue inside the five-second limiter\n");
     std::printf("PASS: GPU-only N-1 color/depth, 18 changing debug frames without feedback, RGBA/raw INTZ-to-R32F accuracy, "
         "first-frame/reset/resize/format/generation/gap/missing-depth invalidation, distinct depth resolution and 1920x1080 pairs, "
         "stable texture identities, render-state restoration; no CPU image readback\n");

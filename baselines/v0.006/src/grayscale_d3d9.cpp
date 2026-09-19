@@ -143,39 +143,6 @@ namespace
 
 namespace enr
 {
-    depth_probe_result read_depth_probe_queries(IDirect3DQuery9 *const (&queries)[3],
-        std::uint64_t generation)
-    {
-        depth_probe_result output = {};
-        DWORD counts[3] = {};
-        const auto invalid = [](HRESULT error)
-        {
-            depth_probe_result discarded = {};
-            discarded.status = depth_probe_result::state::invalid;
-            discarded.error = error;
-            return discarded;
-        };
-        for (unsigned index = 0; index < 3; ++index)
-        {
-            if (queries[index] == nullptr) return invalid(E_POINTER);
-            // Flags zero never flushes. Even a successful non-S_OK status must
-            // not publish bytes which the driver has not promised to initialize.
-            const HRESULT result = queries[index]->GetData(&counts[index], sizeof(DWORD), 0);
-            if (result == S_FALSE) return output;
-            if (result != S_OK) return invalid(FAILED(result) ? result : E_UNEXPECTED);
-        }
-        for (DWORD count : counts)
-            if (count > depth_probe_sample_count) return invalid(E_UNEXPECTED);
-        // Both signature passes discard all pixels rejected by the valid pass.
-        if (counts[1] > counts[0] || counts[2] > counts[0]) return invalid(E_UNEXPECTED);
-        output.status = depth_probe_result::state::ready;
-        output.valid = counts[0];
-        output.signature1 = counts[1];
-        output.signature2 = counts[2];
-        output.generation = generation;
-        return output;
-    }
-
     grayscale_d3d9::~grayscale_d3d9()
     {
         reset();
@@ -183,8 +150,6 @@ namespace enr
 
     void grayscale_d3d9::reset()
     {
-        // Invalidate every outward-facing state before releasing any COM object.
-        invalidate_history();
         motion_.reset();
         release(motion_display_shader_);
         motion_display_attempted_ = false;
@@ -195,7 +160,11 @@ namespace enr
         history_initialization_result_ = S_OK;
         history_depth_description_ = {};
         history_color_description_ = {};
-        release_depth_probe();
+        for (auto &query : probe_queries_)
+            release(query);
+        release(probe_vertices_);
+        release(probe_shader_);
+        release(probe_target_);
         release(depth_shader_);
         release(state_block_);
         release(vertices_);
@@ -216,7 +185,6 @@ namespace enr
         probe_error_ = S_OK;
         probe_last_sample_ = probe_last_poll_ = 0;
         probe_generation_ = 0;
-        probe_source_ = nullptr;
     }
 
     HRESULT grayscale_d3d9::initialize(IDirect3DDevice9 *device,
@@ -383,30 +351,10 @@ namespace enr
 
     void grayscale_d3d9::invalidate_history()
     {
-        cancel_depth_probe();
         motion_.invalidate();
         history_valid_ = false;
         history_source_ = nullptr;
         history_generation_ = history_frame_ = 0;
-    }
-
-    void grayscale_d3d9::cancel_depth_probe()
-    {
-        probe_pending_ = false;
-        probe_source_ = nullptr;
-        probe_generation_ = 0;
-        ++probe_epoch_;
-    }
-
-    void grayscale_d3d9::release_depth_probe()
-    {
-        cancel_depth_probe();
-        for (auto &query : probe_queries_) release(query);
-        release(probe_vertices_);
-        release(probe_shader_);
-        release(probe_target_);
-        probe_attempted_ = probe_disabled_ = false;
-        probe_error_ = S_OK;
     }
 
     void grayscale_d3d9::release_history()
@@ -934,66 +882,18 @@ namespace enr
     depth_probe_result grayscale_d3d9::poll_depth_probe(IDirect3DDevice9 *device,
         IDirect3DTexture9 *depth, std::uint64_t generation, ULONGLONG now)
     {
-        depth_probe_result output = {};
-        const auto unavailable = [](HRESULT error)
+        depth_probe_result output;
+        output.generation = generation;
+        const auto unavailable = [&output](HRESULT error)
         {
-            depth_probe_result result = {};
-            result.status = depth_probe_result::state::unavailable;
-            result.error = error;
-            return result;
-        };
-        const auto discard = [this, now](HRESULT error)
-        {
-            if (error == D3DERR_DEVICELOST || error == D3DERR_DEVICENOTRESET)
-            {
-                invalidate_history();
-                // D3D9 query objects cannot survive device loss. Retire them
-                // now; the operational-state check gates any later recreation.
-                release_depth_probe();
-            }
-            else
-                cancel_depth_probe();
-            // A lost device or corrupt diagnostic must not cause a retry loop.
-            // Reset clears this limiter once the device is recreated.
-            probe_sampled_ = true;
-            probe_last_sample_ = probe_last_poll_ = now;
-            depth_probe_result result = {};
-            // TestCooperativeLevel is restricted to the device creation thread.
-            // If a title presents elsewhere, skip diagnostics without disabling
-            // any GPU rendering or treating that thread restriction as corruption.
-            result.status = error == D3DERR_INVALIDCALL || error == D3DERR_DEVICELOST ||
-                error == D3DERR_DEVICENOTRESET ? depth_probe_result::state::unavailable :
-                depth_probe_result::state::invalid;
-            result.error = FAILED(error) ? error : E_UNEXPECTED;
-            return result;
+            output.status = depth_probe_result::state::unavailable;
+            output.error = error;
+            return output;
         };
         if (device == nullptr || depth == nullptr || device_ != device || state_block_ == nullptr)
-        {
-            cancel_depth_probe();
             return unavailable(E_INVALIDARG);
-        }
-        if (probe_generation_ != generation || probe_source_ != depth)
-        {
-            // Do not collect queries issued against a different depth resource,
-            // even if a caller happened to reuse its generation number.
-            cancel_depth_probe();
-            probe_generation_ = generation;
-            probe_source_ = depth;
-        }
         if (probe_disabled_)
             return unavailable(probe_error_);
-
-        if (probe_pending_)
-        {
-            if (now - probe_last_poll_ < 100) return output;
-        }
-        else if (probe_sampled_ && now - probe_last_sample_ < 5000)
-            return output;
-
-        // D3D9 can report successful resource/query operations after device
-        // loss while returning dummy data. These checks do not flush or wait.
-        const HRESULT before = device->TestCooperativeLevel();
-        if (before != S_OK) return discard(before);
 
         if (!probe_attempted_)
         {
@@ -1005,37 +905,53 @@ namespace enr
                 return unavailable(probe_error_);
             }
         }
-        const std::uint64_t expected_epoch = probe_epoch_;
-        const auto same_source = [this, device, depth, generation, expected_epoch]
+        if (probe_generation_ != generation)
         {
-            return device_ == device && probe_source_ == depth &&
-                probe_generation_ == generation && probe_epoch_ == expected_epoch;
-        };
+            // Discard results belonging to an old depth selection. Reissuing a
+            // query replaces its previous result without waiting for the GPU.
+            probe_pending_ = false;
+            // Keep the last issue time: alternating depth selections must not
+            // turn an infrequent probe into per-frame GPU work.
+            probe_generation_ = generation;
+        }
         if (probe_pending_)
         {
+            if (now - probe_last_poll_ < 100)
+                return output;
             probe_last_poll_ = now;
-            const depth_probe_result collected = read_depth_probe_queries(probe_queries_, generation);
-            const HRESULT after = device->TestCooperativeLevel();
-            if (after != S_OK) return discard(after);
-            if (!same_source() || !probe_pending_) return discard(E_ABORT);
-            if (collected.status == depth_probe_result::state::none) return output;
-            if (collected.status != depth_probe_result::state::ready) return discard(collected.error);
+            DWORD results[3] = {};
+            for (unsigned index = 0; index < 3; ++index)
+            {
+                // Flags zero is deliberately nonblocking. S_FALSE leaves this
+                // sample pending until a later frame; there is no spin or flush.
+                const HRESULT result = probe_queries_[index]->GetData(&results[index], sizeof(DWORD), 0);
+                if (result == S_FALSE) return output;
+                if (FAILED(result))
+                {
+                    probe_error_ = result;
+                    probe_disabled_ = true;
+                    probe_pending_ = false;
+                    return unavailable(result);
+                }
+            }
             probe_pending_ = false;
-            return collected;
+            output.status = depth_probe_result::state::ready;
+            output.valid = results[0];
+            output.signature1 = results[1];
+            output.signature2 = results[2];
+            output.generation = probe_generation_;
+            return output;
         }
+        if (probe_sampled_ && now - probe_last_sample_ < 5000)
+            return output;
 
         probe_error_ = draw_pass(probe_target_, depth, probe_shader_, probe_vertices_,
             16, 16, nullptr, 0, probe_queries_);
-        const HRESULT after = device->TestCooperativeLevel();
-        if (after != S_OK) return discard(after);
-        if (!same_source()) return discard(E_ABORT);
         if (FAILED(probe_error_))
         {
-            cancel_depth_probe();
             probe_disabled_ = true;
             return unavailable(probe_error_);
         }
-        if (probe_error_ != S_OK) return discard(E_UNEXPECTED);
         probe_pending_ = true;
         probe_sampled_ = true;
         probe_last_sample_ = probe_last_poll_ = now;

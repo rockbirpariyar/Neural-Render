@@ -13,7 +13,7 @@
 
 // MINGW32: g++ -std=c++20 -O2 -Wall -Wextra -DWIN32_LEAN_AND_MEAN -DNOMINMAX
 // -municode -static -isystem "../reshade/include" tests/d3d9_gpu_host.cpp
-// -o build/runtime-gpu-v0061/d3d9_gpu_host.exe
+// -o build/runtime-gpu-v006/d3d9_gpu_host.exe
 // Run beside the ReShade DLL and ENR. Tests API success, state and integer counters only.
 static_assert(sizeof(void *) == 4, "The real ReShade host test must be 32-bit.");
 
@@ -163,16 +163,13 @@ namespace
 
     bool check_counters(const std::filesystem::path &log_path, unsigned frame)
     {
-        const auto entire_log = read_log(log_path);
-        if (!entire_log.starts_with("ENR v0.006.1 initialized\r\n"))
+        const auto actual = read_log(log_path);
+        if (!actual.starts_with("ENR v0.006 initialized\r\n"))
         {
-            std::fprintf(stderr, "FAIL: missing v0.006.1 initialization log\n%s\n", entire_log.c_str());
+            std::fprintf(stderr, "FAIL: missing v0.006 initialization log\n%s\n", actual.c_str());
             return false;
         }
-        const auto epoch = entire_log.rfind("Runtime active: epoch=");
-        const auto actual = epoch == std::string::npos ? entire_log : entire_log.substr(epoch);
-        const unsigned epoch_frame = frame == 0 ? 0 : (frame - 1) % 300 + 1;
-        for (unsigned boundary = 300; boundary <= epoch_frame; boundary += 300)
+        for (unsigned boundary = 300; boundary <= frame; boundary += 300)
         {
             const std::string expected = "present callbacks=" + std::to_string(boundary) + "\r\n"
                 + "reshade_present callbacks=" + std::to_string(boundary) + "\r\n"
@@ -187,7 +184,7 @@ namespace
                 return false;
             }
         }
-        if (epoch_frame >= 300)
+        if (frame >= 600)
         {
             const std::string unavailable = "No usable depth buffer available\r\n";
             const auto occurrence = actual.find(unavailable);
@@ -280,7 +277,7 @@ int wmain(int argc, wchar_t **argv)
     using direct3d_create9 = IDirect3D9 *(WINAPI *)(UINT);
     const auto create_d3d = std::bit_cast<direct3d_create9>(GetProcAddress(objects.module, "Direct3DCreate9"));
     if (create_d3d == nullptr) return windows_failure("GetProcAddress(Direct3DCreate9)");
-    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.006.1 D3D9 missing-depth fallback test",
+    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.006 D3D9 missing-depth fallback test",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (objects.window == nullptr) return windows_failure("CreateWindowExW");
@@ -314,7 +311,7 @@ int wmain(int argc, wchar_t **argv)
     objects.device = nullptr;
     if (!check_counters(log_path, 600)) return 1;
     std::printf("PASS: 600 real ReShade D3D9 DISCARD presents; flags 0x56; 600 final callbacks/draws; "
-        "zero failures; counters restart per runtime epoch; missing-depth logged once per epoch; application state/texture/RT/depth bindings restored; "
+        "zero failures; exact 300-frame counters; missing-depth logged once; application state/texture/RT/depth bindings restored; "
         "Reset 640x480 -> 800x600 passed; no output inspection\n");
     return 0;
 }

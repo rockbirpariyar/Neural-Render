@@ -1,51 +1,15 @@
-# ENR v0.006.1
+# ENR v0.006
 
 A 32-bit Direct3D 9 add-on for ReShade 6.8. The established final-stage
 grayscale remains the default. This milestone estimates a GPU motion field
 from current/previous color and depth while preserving temporal history and
-all existing depth views. v0.006.1 changes lifetime/reset safety and diagnostic
-validation only; the grayscale, depth, history and motion shaders are unchanged.
+all existing depth views.
 
-The gameplay-confirmed v0.006 source and add-on are preserved in
-`baselines/v0.006`, with a SHA-256 manifest. Earlier v0.005 and v0.004 baselines
-remain available. To roll back, close the game and restore
-`baselines/v0.006/enr.addon32` to the game directory.
-
-## Reset and diagnostic safety
-
-Official swapchain/runtime initialization events register live identities.
-Rendering requires a registered D3D9 runtime and an open presentation in its
-current initialization epoch. Runtime addresses can be reused after reset;
-only a new initialization event permits processing again. Unknown, destroyed,
-out-of-presentation and duplicate final callbacks perform no rendering.
-ENR retains one active game runtime; unrelated runtime destruction does not
-release its resources.
-
-Destruction closes callback access under the rendering lock before invalidating
-history/motion, canceling pending queries and releasing resources. Frame,
-history and motion counters restart at zero for the next active runtime epoch.
-`Runtime state reset: ...` and `Runtime active: epoch=...` delimit those epochs.
-The epoch identifier remains monotonic to distinguish reused addresses.
-Debug-mode selections persist across reset.
-
-Depth diagnostics publish only complete `S_OK` results belonging to the current
-depth selection. All three integer counts must be at most 256, and each
-signature count must not exceed the valid count. An impossible result produces
-`ERROR: invalid depth diagnostic discarded (...)`; it is never logged as
-`Depth samples`, used for change detection, or clamped into a plausible value.
-Output/comparison fields are zeroed on cancellation and reset.
-
-Nonblocking device-status checks bracket the infrequent diagnostic submission
-and collection. Device loss invalidates history/motion and retires all query
-resources; recreation waits until the device is operational. Device loss or an
-unsupported diagnostic thread is reported as unavailable, without adding waits
-or disabling the normal GPU views. D3D9 restricts `TestCooperativeLevel` to the
-device-creation thread. No CPU image readback or new per-frame probe is added.
-
-Microsoft documents that [queries are lost with the device](https://learn.microsoft.com/en-us/windows/win32/direct3d9/asynchronous-notification)
-and that an [unissued query can return an uninitialized result](https://learn.microsoft.com/en-us/windows/win32/direct3d9/queries).
-The observed v0.006 oversized count occurred immediately before a reset notice;
-it establishes invalid diagnostic data, not a proven C++ race.
+The confirmed v0.005 binary and source snapshot are preserved in
+`baselines/v0.005`, with SHA-256 checksums in `SHA256SUMS.txt`. Its add-on hash
+matches the confirmed game installation. The older v0.004 snapshot remains
+in `baselines/v0.004`. To roll back, close the game and restore
+`baselines/v0.005/enr.addon32` to the game directory.
 
 ## Controls
 
@@ -292,7 +256,7 @@ With Warrior Within closed, replace:
 E:\SteamLibrary\steamapps\common\Prince of Persia The Warrior Within\enr.addon32
 ```
 
-Check **ENR v0.006.1** in ReShade's Add-ons tab. During active gameplay, use
+Check **ENR v0.006** in ReShade's Add-ons tab. During active gameplay, use
 Ctrl+F10 and rotate the camera to inspect coherent motion colors; hold the
 camera still while the character moves to inspect local differences. Check
 Ctrl+F9 previous color, Ctrl+F6 current depth and Ctrl+F11 previous depth.
@@ -306,8 +270,7 @@ debug pass.
 `enr.log` is recreated beside the add-on. Example entries are:
 
 ```text
-ENR v0.006.1 initialized
-Runtime active: epoch=1
+ENR v0.006 initialized
 Depth buffer detected
 Depth resolution: 1920x1080
 Depth format: INTZ (0x5A544E49)
@@ -347,7 +310,7 @@ or recreation. History-copy errors have a separate HRESULT message and
 failure counter, allowing the stable current-frame display to continue.
 
 The existing counters plus history and motion counters are
-logged at 300-frame boundaries within each runtime epoch. `grayscale draws` counts successful final
+logged at 300-frame boundaries. `grayscale draws` counts successful final
 fullscreen passes in every display mode, excluding history copies and tiny
 validation draws. These counters report API success, not visual proof of the
 displayed result. `Motion estimation ACTIVE` means the shader passes executed;
@@ -355,26 +318,6 @@ it does not certify every estimated vector. Motion failures have their own
 HRESULT message and counter.
 
 ## Tests
-
-The v0.006.1 regressions include `tests/depth_probe_query_test.cpp` (34
-deterministic cases for incomplete, failed and impossible query results) and
-callback-lifetime smoke checks covering 1,800 present callbacks across four
-runtime epochs, unknown/destroyed identities and callbacks after unload.
-The native temporal fixture retains all 85 GPU predicates and adds pending
-query cancellation, source/generation changes, history invalidation and reset.
-
-The first v0.006.1 real ReShade motion-view run passed 3,471 presentations,
-four resets and a public effect reload, with zero rendering/history/motion
-failures. Each reset restored valid depth and restarted frame counters. Logs
-are in `build/runtime-motion-v0061`; native results are in
-`build/temporal-v0061.stdout.txt`. The depth fixture's `--soak` run passed
-10,371 presentations across eight runtime epochs (seven resets, at least
-1,250 frames per epoch), plus an effect reload. All depth counts stayed within
-0..256; rendering/history/motion failures and diagnostic errors stayed at zero.
-Results are in `build/runtime-depth-v0061`. One cold post-reset Present took
-1,125 ms before normal progression resumed, so this verifies lifecycle safety,
-not hitch-free reset initialization. The no-depth fallback also passed 600
-presentations across two resize epochs (`build/runtime-gpu-v0061`).
 
 `tests/smoke_host.cpp` checks registration, callback counts, log boundaries,
 rejected registration and unload/process-exit cleanup.
@@ -437,9 +380,6 @@ roughly 0.16–0.33 seconds; steady-state performance and gameplay appearance
 must be evaluated separately. Buffered fixture logging is necessary to avoid
 the test runner's unbuffered pipe overhead affecting wall-clock test phases.
 
-v0.006 color, depth, temporal history and the motion field are confirmed in
-Warrior Within gameplay. v0.006.1 still requires a long actual-game run with
-pause/menu transitions, alt-tab and reset. Check that every `Depth samples`
-value remains within 0..256, each new runtime epoch restarts its counters,
-all debug views recover, and no invalid-diagnostic errors occur. Automated
-reset fixtures cannot establish that final gameplay result.
+The final motion-field appearance and performance still need confirmation
+in the actual game; v0.005 temporal history and prior grayscale/depth are
+already confirmed there.

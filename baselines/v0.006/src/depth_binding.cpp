@@ -89,22 +89,21 @@ namespace enr
 
     void depth_binding::release_source()
     {
-        auto *const previous = texture_;
+        if (texture_ != nullptr)
+            texture_->Release();
         texture_ = nullptr;
         description_ = {};
         view_ = {};
         acquisition_result_ = S_FALSE;
-        if (previous != nullptr)
-            previous->Release();
     }
 
     void depth_binding::reset()
     {
+        release_source();
         runtime_ = nullptr;
         variable_ = {};
         searched_ = false;
         ++generation_;
-        release_source();
     }
 
     HRESULT depth_binding::acquire(reshade::api::effect_runtime *runtime,

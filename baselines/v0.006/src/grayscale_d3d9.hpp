@@ -28,22 +28,15 @@ namespace enr
         UINT depth_width = 0, depth_height = 0;
     };
 
-    inline constexpr unsigned depth_probe_sample_count = 16 * 16;
-
     struct depth_probe_result
     {
-        enum class state { none, ready, unavailable, invalid } status = state::none;
+        enum class state { none, ready, unavailable } status = state::none;
         unsigned valid = 0;
         unsigned signature1 = 0;
         unsigned signature2 = 0;
         HRESULT error = S_OK;
         std::uint64_t generation = 0;
     };
-
-    // Internal query-result boundary, also exercised by the lifecycle regression.
-    // Publishes all three counts together, only after exact S_OK and validation.
-    depth_probe_result read_depth_probe_queries(IDirect3DQuery9 *const (&queries)[3],
-        std::uint64_t generation);
 
     // One same-frame scratch image and reusable shader, geometry and state block.
     // Reset releases the state block's captured game references before device reset.
@@ -72,9 +65,6 @@ namespace enr
         IDirect3DTexture9 *previous_depth() const { return history_depth_; }
         // Effect reloads/source interruptions invalidate without reallocating.
         void invalidate_history();
-        // Forget any in-flight diagnostic before releasing/changing its source.
-        // Retains resources and the five-second issue limiter; never waits.
-        void cancel_depth_probe();
         // Call after render/render_depth. Only three asynchronous integer query
         // results reach the CPU; no image is copied, mapped, or retained.
         depth_probe_result poll_depth_probe(IDirect3DDevice9 *device,
@@ -93,7 +83,6 @@ namespace enr
         HRESULT initialize_depth_shader();
         HRESULT initialize_motion_display_shader();
         HRESULT initialize_probe();
-        void release_depth_probe();
         HRESULT draw_pass(IDirect3DSurface9 *target, IDirect3DTexture9 *input,
             IDirect3DPixelShader9 *shader, IDirect3DVertexBuffer9 *vertices,
             UINT width, UINT height, const float *constants, DWORD color_mask,
@@ -159,7 +148,5 @@ namespace enr
         ULONGLONG probe_last_sample_ = 0;
         ULONGLONG probe_last_poll_ = 0;
         std::uint64_t probe_generation_ = 0;
-        IDirect3DTexture9 *probe_source_ = nullptr; // Borrowed identity only.
-        std::uint64_t probe_epoch_ = 0;
     };
 }

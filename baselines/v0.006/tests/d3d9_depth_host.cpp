@@ -2,9 +2,9 @@
 // entry point is retained under a different name and is not run by this fixture.
 // MINGW32: g++ -std=c++20 -O2 -Wall -Wextra -DWIN32_LEAN_AND_MEAN -DNOMINMAX
 // -municode -static -isystem "../reshade/include" tests/d3d9_depth_host.cpp
-// -o build/runtime-depth-v0061/d3d9_depth_host.exe
+// -o build/runtime-depth-v006/d3d9_depth_host.exe
 // Run in that isolated folder with ReShade d3d9.dll and enr.addon32 beside it:
-// ./d3d9_depth_host.exe "E:/code project/Dlls 5/exovyn-neural-renderer/build/runtime-depth-v0061/d3d9.dll"
+// ./d3d9_depth_host.exe "E:/code project/Dlls 5/exovyn-neural-renderer/build/runtime-depth-v006/d3d9.dll"
 // ReShade.ini: [GENERAL] EffectSearchPaths=.\; enr.ini: [ENR] DepthDebug=0 or 1.
 // The add-on creates ENR_Depth.addonfx; keep it in this isolated effect-search folder.
 #define wmain grayscale_only_fixture_entry_point
@@ -12,85 +12,9 @@
 #undef wmain
 
 #include <cstring>
-#include <cwchar>
-#include <reshade.hpp>
-#include <sstream>
 
 namespace
 {
-    reshade::api::effect_runtime *observed_runtime = nullptr;
-    unsigned observed_reloads = 0;
-    void observe_init(reshade::api::effect_runtime *runtime) { observed_runtime = runtime; }
-    void observe_destroy(reshade::api::effect_runtime *runtime) { if(observed_runtime == runtime) observed_runtime = nullptr; }
-    void observe_reload(reshade::api::effect_runtime *runtime) { if(observed_runtime == runtime) ++observed_reloads; }
-    struct runtime_observer
-    {
-        using register_addon_type = bool (*)(void *,std::uint32_t);
-        using unregister_addon_type = void (*)(void *);
-        using event_type = void (*)(reshade::addon_event,void *);
-        unregister_addon_type unregister_addon = nullptr;
-        event_type unregister_event = nullptr;
-        bool active = false;
-        bool initialize(HMODULE reshade_module)
-        {
-            const auto register_addon = std::bit_cast<register_addon_type>(GetProcAddress(reshade_module,"ReShadeRegisterAddon"));
-            const auto register_event = std::bit_cast<event_type>(GetProcAddress(reshade_module,"ReShadeRegisterEvent"));
-            unregister_addon = std::bit_cast<unregister_addon_type>(GetProcAddress(reshade_module,"ReShadeUnregisterAddon"));
-            unregister_event = std::bit_cast<event_type>(GetProcAddress(reshade_module,"ReShadeUnregisterEvent"));
-            if(!register_addon || !register_event || !unregister_addon || !unregister_event ||
-                !register_addon(GetModuleHandleW(nullptr),RESHADE_API_VERSION)) return false;
-            register_event(reshade::addon_event::init_effect_runtime,reinterpret_cast<void *>(observe_init));
-            register_event(reshade::addon_event::destroy_effect_runtime,reinterpret_cast<void *>(observe_destroy));
-            register_event(reshade::addon_event::reshade_reloaded_effects,reinterpret_cast<void *>(observe_reload));
-            active = true;
-            return true;
-        }
-        ~runtime_observer()
-        {
-            if(!active) return;
-            unregister_event(reshade::addon_event::init_effect_runtime,reinterpret_cast<void *>(observe_init));
-            unregister_event(reshade::addon_event::destroy_effect_runtime,reinterpret_cast<void *>(observe_destroy));
-            unregister_event(reshade::addon_event::reshade_reloaded_effects,reinterpret_cast<void *>(observe_reload));
-            unregister_addon(GetModuleHandleW(nullptr));
-            observed_runtime = nullptr;
-        }
-    };
-
-    bool check_epoch_counters(const std::string &log,unsigned expected_epochs)
-    {
-        std::istringstream lines(log);
-        std::string line;
-        unsigned epochs=0,previous_boundary=0,boundaries=0;
-        while(std::getline(lines,line))
-        {
-            if(line.starts_with("Runtime active: epoch="))
-            {
-                if(epochs && boundaries==0) return false;
-                ++epochs; previous_boundary=0; boundaries=0;
-            }
-            if(line.starts_with("Depth samples: valid="))
-            {
-                const auto valid=std::strtoul(line.c_str()+21,nullptr,10);
-                if(valid>256) return false;
-            }
-            if(!line.starts_with("present callbacks=")) continue;
-            unsigned values[9] {};
-            values[0]=std::strtoul(line.c_str()+18,nullptr,10);
-            constexpr const char *prefixes[]={"reshade_present callbacks=","grayscale draws=","failures=",
-                "history valid=","history updates=","history failures=","Motion frames processed: ","Motion failures: "};
-            for(unsigned i=1;i<9;++i)
-            {
-                if(!std::getline(lines,line) || !line.starts_with(prefixes[i-1])) return false;
-                values[i]=std::strtoul(line.c_str()+std::strlen(prefixes[i-1]),nullptr,10);
-            }
-            if(values[0]!=previous_boundary+300 || values[1]!=values[0] || values[2]!=values[1] ||
-                values[3]!=0 || values[4]>1 || values[5]>values[2] || values[6]!=0 ||
-                values[7]>values[5] || values[8]!=0) return false;
-            previous_boundary=values[0]; ++boundaries;
-        }
-        return epochs==expected_epochs && boundaries!=0;
-    }
-
     struct scene_vertex { float x, y, z, rhw; D3DCOLOR color; };
 
     bool create_scene_geometry(IDirect3DDevice9 *device, IDirect3DVertexBuffer9 **buffer)
@@ -167,7 +91,7 @@ namespace
             std::fprintf(stderr, "FAIL: transient acquisition/reset incorrectly logged unavailable depth\n%s\n", log.c_str());
             return false;
         }
-        for (const char *required : { "ENR v0.006.1 initialized", "Depth buffer detected",
+        for (const char *required : { "ENR v0.006 initialized", "Depth buffer detected",
                 "Depth resolution: 640x480", "Depth format:",
                 "Depth changes observed (sampled GPU signature)", "present callbacks=300",
                 "Depth samples: valid=128/256", "reshade_present callbacks=300", "grayscale draws=300", "failures=0",
@@ -225,24 +149,19 @@ int wmain(int argc, wchar_t **argv)
     // becoming part of the fixture's real-time scene/probe windows.
     std::setvbuf(stdout,nullptr,_IOFBF,16384);
     std::setvbuf(stderr,nullptr,_IOFBF,16384);
-    if (argc != 2 && (argc != 3 || std::wcscmp(argv[2],L"--soak") != 0))
+    if (argc != 2)
     {
-        std::fprintf(stderr, "Usage: d3d9_depth_host.exe ABSOLUTE_PATH_TO_RESHADE_D3D9_DLL [--soak]\n");
+        std::fprintf(stderr, "Usage: d3d9_depth_host.exe ABSOLUTE_PATH_TO_RESHADE_D3D9_DLL\n");
         return 1;
     }
-    const bool long_soak = argc == 3;
-    const unsigned reset_cycles = long_soak ? 7 : 4;
-    const unsigned minimum_epoch_frames = long_soak ? 1250 : 300;
     const auto log_path = std::filesystem::absolute(argv[1]).parent_path() / "enr.log";
     test_objects objects;
     objects.module = LoadLibraryW(argv[1]);
     if (objects.module == nullptr) return windows_failure("LoadLibraryW(ReShade d3d9.dll)");
-    runtime_observer observer;
-    if(!observer.initialize(objects.module)) { std::fprintf(stderr,"FAIL: public runtime observer registration\n"); return 1; }
     using direct3d_create9 = IDirect3D9 *(WINAPI *)(UINT);
     const auto create_d3d = std::bit_cast<direct3d_create9>(GetProcAddress(objects.module, "Direct3DCreate9"));
     if (create_d3d == nullptr) return windows_failure("GetProcAddress(Direct3DCreate9)");
-    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.006.1 depth API/state test",
+    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.006 depth API/state test",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (objects.window == nullptr) return windows_failure("CreateWindowExW");
@@ -343,24 +262,10 @@ int wmain(int argc, wchar_t **argv)
             }
         }
         if (!present_scene(elapsed < 7000 ? 0 : elapsed < 12000 ? 1 : 2)) return 1;
-    } while (GetTickCount64() - start < 22000 || frame < (long_soak ? 1250u : 600u));
+    } while (GetTickCount64() - start < 22000 || frame < 600);
 
     if (!check_depth_log(log_path)) return 1;
-    if(!observed_runtime) { std::fprintf(stderr,"FAIL: missing live public effect runtime\n"); return 1; }
-    const auto reload_log_offset=read_log(log_path).size();
-    const auto reload_count=observed_reloads;
-    observed_runtime->reload_effect_next_frame("ENR_Depth.addonfx");
-    const auto reload_start=GetTickCount64();
-    do { if(!present_scene(0)) return 1; } while(GetTickCount64()-reload_start<7000);
-    const auto reload_log=read_log(log_path).substr(reload_log_offset);
-    if(observed_reloads<=reload_count || reload_log.find("History reset: ReShade effects reloaded")==std::string::npos ||
-        reload_log.find("History became valid")==std::string::npos)
-    { std::fprintf(stderr,"FAIL: public effect reload did not invalidate/reseed history\n%s\n",reload_log.c_str()); return 1; }
-    for(unsigned reset_index=0;reset_index<reset_cycles;++reset_index)
-    {
     const std::size_t before_reset_log_size = read_log(log_path).size();
-    // A short simulated pause changes no resources or presentation identity.
-    Sleep(300);
     // Drop all application references to default-pool surfaces. The add-on's
     // destroy/reset events must also release its source and reusable resources.
     if (!succeeded(objects.device->SetTexture(0, nullptr), "SetTexture0(before reset)") ||
@@ -379,24 +284,20 @@ int wmain(int argc, wchar_t **argv)
     do
     {
         if (!present_scene(0)) return 1;
-    } while (GetTickCount64() - reset_time < 7000 || frame-reset_frame<minimum_epoch_frames);
-    std::printf("Fixture reset epoch %u: %u frames in %llu ms\n",reset_index+2,frame-reset_frame,static_cast<unsigned long long>(GetTickCount64()-reset_time));
+    } while (GetTickCount64() - reset_time < 7000);
+    std::printf("Fixture post-reset window: %u frames in %llu ms\n",frame-reset_frame,static_cast<unsigned long long>(GetTickCount64()-reset_time));
     std::printf("Fixture max whole-frame CPU wall=%llu ms; max buffered log call=%llu ms\n",
         static_cast<unsigned long long>(maximum_frame_ms),static_cast<unsigned long long>(maximum_log_ms));
     const auto after_reset_log = read_log(log_path).substr(before_reset_log_size);
     if (after_reset_log.find("Depth samples: valid=256/256") == std::string::npos ||
         after_reset_log.find("Temporal history initialized") == std::string::npos ||
-        after_reset_log.find("History became valid") == std::string::npos || !check_depth_log(log_path) ||
-        !check_epoch_counters(read_log(log_path),reset_index+2))
+        after_reset_log.find("History became valid") == std::string::npos || !check_depth_log(log_path))
     {
         std::fprintf(stderr, "FAIL: scene depth not reacquired after reset\n%s\n", after_reset_log.c_str());
         return 1;
     }
-    }
     std::printf("PASS: %u real ReShade presents; 16 scene-depth draws/frame; changing depth acquired; "
         "nonzero asynchronous depth samples; zero pass failures; application state/PS constants restored; "
-        "public effect reload reseeded history; %u Reset epochs each reached at least %u frames and reacquired depth/history/motion; "
-        "counter epochs restarted at 300 with depth counts bounded by 256; no CPU image inspection or forced GPU synchronization\n",
-        frame,reset_cycles,minimum_epoch_frames);
+        "depth reacquired after Reset; no CPU image inspection or forced GPU synchronization\n", frame);
     return 0;
 }
