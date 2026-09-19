@@ -2,9 +2,9 @@
 // entry point is retained under a different name and is not run by this fixture.
 // MINGW32: g++ -std=c++20 -O2 -Wall -Wextra -DWIN32_LEAN_AND_MEAN -DNOMINMAX
 // -municode -static -isystem "../reshade/include" tests/d3d9_depth_host.cpp
-// -o build/runtime-depth-v004/d3d9_depth_host.exe
+// -o build/runtime-depth-v005/d3d9_depth_host.exe
 // Run in that isolated folder with ReShade d3d9.dll and enr.addon32 beside it:
-// ./d3d9_depth_host.exe "E:/code project/Dlls 5/exovyn-neural-renderer/build/runtime-depth-v004/d3d9.dll"
+// ./d3d9_depth_host.exe "E:/code project/Dlls 5/exovyn-neural-renderer/build/runtime-depth-v005/d3d9.dll"
 // ReShade.ini: [GENERAL] EffectSearchPaths=.\; enr.ini: [ENR] DepthDebug=0 or 1.
 // The add-on creates ENR_Depth.addonfx; keep it in this isolated effect-search folder.
 #define wmain grayscale_only_fixture_entry_point
@@ -91,7 +91,7 @@ namespace
             std::fprintf(stderr, "FAIL: transient acquisition/reset incorrectly logged unavailable depth\n%s\n", log.c_str());
             return false;
         }
-        for (const char *required : { "ENR v0.004 initialized", "Depth buffer detected",
+        for (const char *required : { "ENR v0.005 initialized", "Depth buffer detected",
                 "Depth resolution: 640x480", "Depth format:",
                 "Depth changes observed (sampled GPU signature)", "present callbacks=300",
                 "Depth samples: valid=128/256", "reshade_present callbacks=300", "grayscale draws=300", "failures=0" })
@@ -133,7 +133,7 @@ int wmain(int argc, wchar_t **argv)
     using direct3d_create9 = IDirect3D9 *(WINAPI *)(UINT);
     const auto create_d3d = std::bit_cast<direct3d_create9>(GetProcAddress(objects.module, "Direct3DCreate9"));
     if (create_d3d == nullptr) return windows_failure("GetProcAddress(Direct3DCreate9)");
-    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.004 depth API/state test",
+    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.005 depth API/state test",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (objects.window == nullptr) return windows_failure("CreateWindowExW");

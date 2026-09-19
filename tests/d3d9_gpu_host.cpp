@@ -13,7 +13,7 @@
 
 // MINGW32: g++ -std=c++20 -O2 -Wall -Wextra -DWIN32_LEAN_AND_MEAN -DNOMINMAX
 // -municode -static -isystem "../reshade/include" tests/d3d9_gpu_host.cpp
-// -o build/runtime-gpu-v004/d3d9_gpu_host.exe
+// -o build/runtime-gpu-v005/d3d9_gpu_host.exe
 // Run beside the ReShade DLL and ENR. Tests API success, state and integer counters only.
 static_assert(sizeof(void *) == 4, "The real ReShade host test must be 32-bit.");
 
@@ -164,9 +164,9 @@ namespace
     bool check_counters(const std::filesystem::path &log_path, unsigned frame)
     {
         const auto actual = read_log(log_path);
-        if (!actual.starts_with("ENR v0.004 initialized\r\n"))
+        if (!actual.starts_with("ENR v0.005 initialized\r\n"))
         {
-            std::fprintf(stderr, "FAIL: missing v0.004 initialization log\n%s\n", actual.c_str());
+            std::fprintf(stderr, "FAIL: missing v0.005 initialization log\n%s\n", actual.c_str());
             return false;
         }
         for (unsigned boundary = 300; boundary <= frame; boundary += 300)
@@ -275,7 +275,7 @@ int wmain(int argc, wchar_t **argv)
     using direct3d_create9 = IDirect3D9 *(WINAPI *)(UINT);
     const auto create_d3d = std::bit_cast<direct3d_create9>(GetProcAddress(objects.module, "Direct3DCreate9"));
     if (create_d3d == nullptr) return windows_failure("GetProcAddress(Direct3DCreate9)");
-    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.004 D3D9 missing-depth fallback test",
+    objects.window = CreateWindowExW(0, L"STATIC", L"ENR v0.005 D3D9 missing-depth fallback test",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (objects.window == nullptr) return windows_failure("CreateWindowExW");

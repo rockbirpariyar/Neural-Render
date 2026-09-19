@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(ENR VERSION 0.0.4 LANGUAGES CXX)
+project(ENR VERSION 0.0.5 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MINGW OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-    message(FATAL_ERROR "ENR v0.004 requires the 32-bit Windows MINGW32 toolchain.")
+    message(FATAL_ERROR "ENR v0.005 requires the 32-bit Windows MINGW32 toolchain.")
 endif()
 
 set(RESHADE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../reshade/include"

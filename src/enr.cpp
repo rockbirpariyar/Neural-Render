@@ -10,7 +10,7 @@
 #include <cwchar>
 #include <new>
 
-static_assert(sizeof(void *) == 4, "ENR v0.004 is a 32-bit add-on.");
+static_assert(sizeof(void *) == 4, "ENR v0.005 is a 32-bit add-on.");
 
 namespace
 {
@@ -317,8 +317,8 @@ namespace
 
 extern "C"
 {
-    __declspec(dllexport) const char *NAME = "ENR v0.004";
-    __declspec(dllexport) const char *DESCRIPTION = "Stable grayscale plus ReShade scene-depth access and GPU depth debugging.";
+    __declspec(dllexport) const char *NAME = "ENR v0.005";
+    __declspec(dllexport) const char *DESCRIPTION = "Stable grayscale and depth debugging with GPU-only previous-frame color and depth.";
 
     __declspec(dllexport) bool AddonInit(HMODULE addon_module, HMODULE reshade_module)
     {
@@ -349,7 +349,7 @@ extern "C"
         have_depth_sample = false;
         sampled_generation = 0;
         initialized = true;
-        write_line("ENR v0.004 initialized");
+        write_line("ENR v0.005 initialized");
         if (depth_debug)
             write_line(depth_linearize ? "Depth visualization enabled (linearized)" : "Depth visualization enabled (raw)");
         const HRESULT helper_result = enr::ensure_depth_effect(addon_module);
